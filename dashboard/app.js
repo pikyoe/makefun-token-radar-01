@@ -1,6 +1,8 @@
 // Token Radar dashboard (radar-2). Reads window.RADAR, written beside dashboard/ by main.ts,
-// and renders the ranked board, a filterable table, an inline detail panel for each protocol and
-// the live-token view. No network: every byte shown is in data.js. No protocol name is special-cased.
+// and renders the ranked board, a filterable table, an inline detail panel for each protocol
+// and the live-token view. No network: every byte shown is in data.js. No protocol name is
+// special-cased. Rows are keyboard-openable (Enter or Space) and sortable columns announce
+// their direction both visibly (an arrow) and to assistive tech (aria-sort).
 (function () {
   'use strict';
 
@@ -10,6 +12,8 @@
   if (meta) meta.textContent = 'Snapshot ' + DATA.as_of + '  ·  DefiLlama protocol index  ·  ' + DATA.model_version + ' model';
   var app = document.getElementById('board');
   var state = { q: '', category: 'all', chain: 'all', scope: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+
+  // ---------------------------------------------------------------- formatting
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -28,16 +32,23 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
-  // The radar-2 model in one function: the page recomputes a row from the snapshot figures and
-  // checks the number board.json carries, so page and board visibly share one arithmetic.
+
+  // The radar-2 model in one function: the page recomputes a row from the snapshot figures
+  // and checks the number board.json carries, so page and board visibly share one arithmetic.
+  // The stability term is the same one lib/model.ts applies: a small premium for steady
+  // weekly growth, a larger discount for a sharp weekly drop, both capped.
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
+    var stability = 1 + Math.min(Math.max(growth, 0), model.stability_steady_cap) * model.stability_steady_rate
+      - Math.min(Math.max(-growth, 0), model.stability_drop_cap) * model.stability_drop_rate;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
     var breadth = 1 + model.breadth_per_chain * Math.min((row.chains || []).length, model.breadth_max_chains);
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * breadth));
+    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * stability * maturity * breadth));
   }
+
+  // ---------------------------------------------------------------- dom helper
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -59,6 +70,8 @@
     }
     return node;
   }
+
+  // ---------------------------------------------------------------- state in the hash
 
   function readHash() {
     var hash = window.location.hash.replace(/^#/, '');
@@ -83,6 +96,8 @@
     if (next) window.history.replaceState(null, '', '#' + next);
     else window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }
+
+  // ---------------------------------------------------------------- filtering and sorting
 
   function isWatchlist(r) { return !!r.watchlist; }
   function rows() {
@@ -111,6 +126,8 @@
       return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
     });
   }
+
+  // ---------------------------------------------------------------- sections
 
   function lede() {
     return el('section', { class: 'lede' },
@@ -157,11 +174,14 @@
     );
   }
 
+  // A sortable column header: the button toggles direction, the arrow shows it, and
+  // aria-sort on the header cell announces it to assistive tech.
   function sortHeader(key, label) {
-    return el('th', { scope: 'col' },
+    var sorted = state.sort === key;
+    return el('th', { scope: 'col', 'aria-sort': sorted ? (state.dir < 0 ? 'descending' : 'ascending') : null },
       el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
         label,
-        state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' ▼' : ' ▲' }) : null
+        sorted ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' ▼' : ' ▲' }) : null
       )
     );
   }
@@ -185,6 +205,8 @@
         el('span', null, el('b', { text: r.name }), isWatchlist(r) ? el('span', { class: 'watch', text: 'watchlist' }) : null),
         el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') })
       );
+      // The row opens its detail on click and on Enter/Space from the keyboard, so the
+      // board is usable without a pointer; tabindex puts the row in the tab order.
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
@@ -252,9 +274,9 @@
       el('h2', { text: 'How implied value is computed — model ' + DATA.model_version }),
       el('p', { class: 'sub', text: 'One function scores every row from the snapshot figures alone. No protocol name is special-cased, and no row is hand-picked. Snapshot date: ' + DATA.as_of + '.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + ' + m.breadth_per_chain + ' x min(chains, ' + m.breadth_max_chains + ')) )'
+        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x stability(change_7d) x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + ' + m.breadth_per_chain + ' x min(chains, ' + m.breadth_max_chains + ')) )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed — how long it has run with no token recorded; an unknown age uses ' + m.unknown_age_days + ' days. Breadth counts the chains a protocol runs on, up to ' + m.breadth_max_chains + '. Growth is weighted at full strength because a protocol gaining TVL fast is gaining the users a launch would reward; maturity spans four years because a long runway with no token recorded is the radar\'s signal. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed — how long it has run with no token recorded; an unknown age uses ' + m.unknown_age_days + ' days. Breadth counts the chains a protocol runs on, up to ' + m.breadth_max_chains + '. Growth is weighted at full strength because a protocol gaining TVL fast is gaining the users a launch would reward; maturity spans four years because a long runway with no token recorded is the radar\'s signal. Stability discounts a sharp weekly TVL drop (up to 10% at a 50% drop) and adds a small premium for steady growth (up to 2%), so a protocol bleeding TVL scores below one holding steady at the same size. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
     );
   }
 
@@ -285,6 +307,7 @@
         el('div', { class: 'stat' }, el('span', { text: 'Seven-day growth' }), el('b', { text: fmtPct(row.change_7d) })),
         el('div', { class: 'stat' }, el('span', { text: 'Age with no token recorded' }), el('b', { text: fmtAge(row.age_days) })),
         el('div', { class: 'stat' }, el('span', { text: 'Growth multiplier' }), el('b', { text: String(row.growth_multiplier) })),
+        el('div', { class: 'stat' }, el('span', { text: 'Stability multiplier' }), el('b', { text: String(row.stability_multiplier) })),
         el('div', { class: 'stat' }, el('span', { text: 'Maturity multiplier' }), el('b', { text: String(row.maturity_multiplier) })),
         el('div', { class: 'stat' }, el('span', { text: 'Breadth multiplier' }), el('b', { text: String(row.breadth_multiplier) })),
         el('div', { class: 'stat' }, el('span', { text: 'Implied value' }), el('b', { text: fmtUsd(row.implied_value_usd) }))

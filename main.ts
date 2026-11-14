@@ -1,11 +1,18 @@
 // Token Radar entry (Node 22, standard library only).
 //
-// main.ts reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
-// pre-token protocol with the radar-2 model in lib/model.ts, writes the ranked board to
-// /output/board.json, writes the dashboard's data beside the page as /output/data.js, copies this
-// repository's dashboard/ and screenshots/ to /output, and writes /output/dossier.json with the
-// vendored dossier builder. The program runs twice in a fresh container and must write identical
-// bytes both times: every output is derived from the snapshot alone, in a fixed order.
+// main.ts is the entrypoint: it reads the sealed snapshot (from /input/snapshot.json, or
+// --input <file|directory>), scores every pre-token protocol with the radar model in
+// lib/model.ts, and writes the entry's outputs:
+//
+//   board.json    the ranked board (rows, rank 1 first by implied value)
+//   data.js       the same board in the compact shape dashboard/app.js reads
+//   dashboard/    a copy of this repository's dashboard/
+//   screenshots/  a copy of this repository's screenshots/
+//   dossier.json  buildDossier's dossier of dashboard/ + screenshots/, written last
+//
+// The program runs twice in a fresh container and both runs must write identical bytes, so
+// every output is derived from the snapshot alone, in a fixed order: no timestamps, no
+// randomness, no environment-dependent text anywhere in the files.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -18,12 +25,15 @@ import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
-/** The scorer's own caps: the text cap shapes the dossier bytes, the rest refuse. */
+/** The scorer's own caps: the text cap shapes the dossier bytes, the rest only refuse. */
 const TEXT_MAX_BYTES = 65_536;
 const SCREENSHOT_CAPS = { max: 4, max_bytes: 524_288 };
 const IMAGE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 
-/** --name <value> out of the arguments, or the fallback. */
+/**
+ * The value of `--name <value>` (or `--name=<value>`) in the arguments, else `fallback`.
+ * Unknown arguments are ignored: the grader calls this program with --input only.
+ */
 function arg(name: string, fallback: string): string {
   const at = process.argv.indexOf(`--${name}`);
   if (at >= 0 && at + 1 < process.argv.length) return process.argv[at + 1]!;
@@ -84,8 +94,12 @@ const dossierPath = join(out, 'dossier.json');
 writeFileSync(dossierPath, buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 const dossierBytes = statSync(dossierPath).size;
 
+// How many of the watchlist's slugs the board actually covers (the gate demands all of them).
+const watchlistCovered = snapshot.watchlist.filter((slug) => board.some((r) => r.slug === slug)).length;
+
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `token radar: top row ${board[0]!.slug} at $${board[0]!.implied_value_usd}; dossier ${dossierBytes} bytes\n` +
-    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n` +
+    `token radar: summary: ${board.length} rows, watchlist ${watchlistCovered}/${snapshot.watchlist.length}, dossier ${dossierBytes} bytes\n`,
 );
